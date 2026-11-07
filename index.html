@@ -1,0 +1,904 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<script>
+/* ============ METİNLER — buradan değiştir ============ */
+const CONFIG = {
+  message: "Seni seviyorum",            // ana yazı
+  signature: "Gurbet",                  // altındaki küçük satır
+  replayHint: "tekrar izlemek için dokun"
+};
+/* ===================================================== */
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>🌹</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: #000; overflow: hidden;
+    height: 100%; overscroll-behavior: none; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+  body { position: fixed; inset: 0; height: 100vh; height: 100dvh; }
+  canvas { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; }
+  .mono { font-family: ui-monospace, Menlo, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace; }
+  #safe {
+    position: fixed; inset: 0; visibility: hidden; pointer-events: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  #txt { position: fixed; left: 0; right: 0; top: 0; text-align: center; pointer-events: none; }
+  #msg {
+    white-space: pre; color: #ff5a76; line-height: 1.2;
+    font-size: clamp(26px, 8vw, 44px); letter-spacing: 0.02em;
+    text-shadow: 0 0 4px rgba(255, 90, 118, .9), 0 0 14px rgba(255, 90, 118, .55), 0 0 32px rgba(255, 60, 100, .3);
+  }
+  #sig {
+    white-space: pre; color: rgba(255, 140, 160, .55); line-height: 1.3; margin-top: .55em;
+    font-size: clamp(14px, 4.2vw, 22px); letter-spacing: .18em;
+    text-shadow: 0 0 8px rgba(255, 90, 118, .35);
+  }
+  #txt span { display: inline-block; visibility: hidden; }
+  #txt span.on { visibility: visible; }
+  #txt span.scr { color: #ffd0d8; text-shadow: 0 0 6px #fff, 0 0 16px rgba(255, 120, 150, .8); }
+  #hint {
+    position: fixed; left: 0; right: 0; text-align: center; pointer-events: none;
+    bottom: calc(env(safe-area-inset-bottom) + 14px);
+    font-size: 11px; letter-spacing: .12em; color: rgba(255, 255, 255, .2);
+    opacity: 0; transition: opacity 2s ease;
+  }
+  #hint.show { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+<div id="txt" class="mono"><div id="msg"></div><div id="sig"></div></div>
+<div id="hint" class="mono"></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js';
+
+/* ---------------------------------------------------------------
+   Karakterler, zaman çizelgesi
+---------------------------------------------------------------- */
+const RAMP = '.-=+tcvxzrjfnuoae<>[]{}$#%&80QB';     // koyu → açık
+const SCRAMBLE = '!#$%&*+-=?@<>[]{}/\\|~^xzQB80';
+const TL = {
+  stem: [0.8, 3.0], leafL: [1.8, 2.8], leafR: [2.5, 3.5], sepal: [3.5, 4.2],
+  bud: [4.2, 7.0], bloom: [7.0, 12.0], text: 12.0
+};
+const LETTER_GAP = 0.09, LETTER_SCR = 0.4;
+const SIG_START = TL.text + CONFIG.message.length * LETTER_GAP + 0.45;
+const END_T = SIG_START + CONFIG.signature.length * 0.08 + 0.35;
+const HINT_T = END_T + 3;
+
+const qs = new URLSearchParams(location.search);
+const FREEZE = qs.has('t') ? parseFloat(qs.get('t')) : null;
+
+const G = ch => ch.charCodeAt(0) - 32;            // glif indeksi (0 = boş)
+const RAMP_G = [...RAMP].map(G);
+const GL_PIPE = G('|'), GL_SL = G('/'), GL_BS = G('\\'), GL_DASH = G('-'), GL_US = G('_');
+const GL_STAR = G('*'), GL_PLUS = G('+'), GL_DOT = G('.');
+const DUST_G = [G('.'), G('-'), G('+')];
+
+const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+const lerp = (a, b, t) => a + (b - a) * t;
+const sstep = x => { x = clamp01(x); return x * x * (3 - 2 * x); };
+const easeIO = x => 0.5 - 0.5 * Math.cos(Math.PI * clamp01(x));
+const easeOut = x => 1 - Math.pow(1 - clamp01(x), 3);
+const prog = (t, [a, b]) => clamp01((t - a) / (b - a));
+function hash3(a, b, c) {
+  let h = (a * 374761393 + b * 668265263 + c * 2246822519) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/* ---------------------------------------------------------------
+   Renk tabloları (parlaklık → renk)
+---------------------------------------------------------------- */
+function makeLUT(stops) {
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255; let k = 0;
+    while (k < stops.length - 2 && x > stops[k + 1][0]) k++;
+    const [x0, c0] = stops[k], [x1, c1] = stops[k + 1];
+    const f = clamp01((x - x0) / (x1 - x0));
+    for (let j = 0; j < 3; j++) lut[i * 3 + j] = Math.round(lerp(c0[j], c1[j], f));
+  }
+  return lut;
+}
+const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const PETAL_LUT = makeLUT([[0, hex('#5c0716')], [0.25, hex('#8b0f24')], [0.5, hex('#d8284a')], [0.7, hex('#ff5a76')], [1, hex('#ffb3c1')]]);
+const GREEN_LUT = makeLUT([[0, hex('#13652f')], [0.4, hex('#25a24f')], [0.7, hex('#3ddc6e')], [1, hex('#b2ffc9')]]);
+const FLASH = [255, 247, 220];
+
+/* ---------------------------------------------------------------
+   three.js kurulum
+---------------------------------------------------------------- */
+const canvas = document.getElementById('c');
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
+} catch (e) {
+  document.querySelectorAll('#txt span').forEach(s => s.classList.add('on'));
+  throw e;
+}
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.autoClear = true;
+
+const LIGHT = new THREE.Vector3(-0.5, 0.62, 0.62).normalize();
+const VS = `
+attribute float ao;
+varying vec3 vN; varying float vAO; varying float vY;
+void main(){
+  vY = position.y; vAO = ao;
+  vN = normalize(normalMatrix * normal);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const FS = `
+uniform float uId; uniform float uClip; uniform vec3 uL; uniform float uBack;
+varying vec3 vN; varying float vAO; varying float vY;
+void main(){
+  if (vY > uClip) discard;
+  vec3 n = normalize(vN);
+  float side = 1.0;
+  if (!gl_FrontFacing) { n = -n; side = uBack; }
+  float d = max(dot(n, uL), 0.0);
+  float wrap = max(dot(n, uL) * 0.5 + 0.5, 0.0);
+  vec3 h = normalize(uL + vec3(0.0, 0.0, 1.0));
+  float s = pow(max(dot(n, h), 0.0), 18.0);
+  float lum = vAO * side * (0.05 + 0.62 * d + 0.25 * wrap * wrap) + 0.28 * s * vAO;
+  gl_FragColor = vec4(clamp(lum, 0.0, 1.0), uId * 0.25, gl_FragCoord.z, 1.0);
+}`;
+function makeMat(id, back = 1) {
+  return new THREE.ShaderMaterial({
+    vertexShader: VS, fragmentShader: FS, side: THREE.DoubleSide,
+    uniforms: { uId: { value: id }, uClip: { value: 1e9 }, uL: { value: LIGHT }, uBack: { value: back } }
+  });
+}
+function addAO(g, v = 1) {
+  const n = g.attributes.position.count;
+  g.setAttribute('ao', new THREE.BufferAttribute(new Float32Array(n).fill(v), 1));
+  return g;
+}
+function gridGeometry(nu, nv, count) {
+  const vpp = (nu + 1) * (nv + 1);
+  const g = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(count * vpp * 3), 3);
+  pos.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pos);
+  g.setAttribute('ao', new THREE.BufferAttribute(new Float32Array(count * vpp).fill(1), 1));
+  const idx = [];
+  for (let p = 0; p < count; p++) for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const a = p * vpp + i * (nv + 1) + j, b = a + nv + 1, c = a + 1, d = b + 1;
+    idx.push(a, b, c, c, b, d);
+  }
+  g.setIndex(idx);
+  return g;
+}
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10);
+const plant = new THREE.Group(); scene.add(plant);
+const crown = new THREE.Group(); plant.add(crown);
+const petalGroup = new THREE.Group(); crown.add(petalGroup);
+const CROWN_TILT = 0.3;
+crown.rotation.x = CROWN_TILT;
+
+const greenMat = () => makeMat(1, 0.8);
+const stemMat = greenMat();
+const stemMesh = new THREE.Mesh(new THREE.BufferGeometry(), stemMat); plant.add(stemMesh);
+const leafMatL = greenMat(), leafMatR = greenMat();
+const leafL = new THREE.Mesh(new THREE.BufferGeometry(), leafMatL); plant.add(leafL);
+const leafR = new THREE.Mesh(new THREE.BufferGeometry(), leafMatR); plant.add(leafR);
+const recMesh = new THREE.Mesh(addAO(new THREE.SphereGeometry(0.075, 18, 12)), greenMat());
+recMesh.scale.y = 0.8; crown.add(recMesh);
+
+/* ---- çanak yapraklar ---- */
+const SEP_N = 5, SNU = 10, SNV = 4;
+const sepGeo = gridGeometry(SNU, SNV, SEP_N);
+const sepMesh = new THREE.Mesh(sepGeo, greenMat()); crown.add(sepMesh);
+function updateSepals(curl, appear) {
+  const P = sepGeo.attributes.position.array, A = sepGeo.attributes.ao.array;
+  let o = 0, oa = 0;
+  const L = 0.36 * appear;
+  for (let s = 0; s < SEP_N; s++) {
+    const al = s * Math.PI * 2 / SEP_N + 0.35;
+    const dx = Math.cos(al), dz = Math.sin(al), sx = -dz, sz = dx;
+    let px = dx * 0.05 * appear, py = 0, pz = dz * 0.05 * appear;
+    const ds = L / SNU;
+    for (let i = 0; i <= SNU; i++) {
+      const u = i / SNU;
+      const e = lerp(0.12 - 0.3 * u, -0.45 - 1.9 * u * u, curl);
+      const ce = Math.cos(e), se = Math.sin(e);
+      // yerel "yukarı" (yaprak normaline yakın)
+      const ux = -se * dx, uy = ce, uz = -se * dz;
+      const hw = 0.11 * appear * Math.pow(1 - u, 1.15) * (0.45 + 0.55 * sstep(u / 0.25));
+      for (let j = 0; j <= SNV; j++) {
+        const v = -1 + 2 * j / SNV;
+        const lift = -Math.abs(v) * hw * 0.35;
+        P[o++] = px + sx * v * hw + ux * lift;
+        P[o++] = py + uy * lift;
+        P[o++] = pz + sz * v * hw + uz * lift;
+        A[oa++] = lerp(0.6, 1, sstep(u / 0.4));
+      }
+      const em = lerp(0.12 - 0.3 * (u + 0.5 / SNU), -0.45 - 1.9 * Math.pow(u + 0.5 / SNU, 2), curl);
+      px += Math.cos(em) * dx * ds; py += Math.sin(em) * ds; pz += Math.cos(em) * dz * ds;
+    }
+  }
+  sepGeo.attributes.position.needsUpdate = true; sepGeo.attributes.ao.needsUpdate = true;
+  sepGeo.computeVertexNormals();
+  sepGeo.computeBoundingSphere();
+}
+
+/* ---- taç yaprakları (altın açı spirali) ---- */
+const NP = 22, PNU = 12, PNV = 10, GOLD = Math.PI * (3 - Math.sqrt(5));
+const petalGeo = gridGeometry(PNU, PNV, NP);
+const petalMat = makeMat(2, 0.72);
+const petalMesh = new THREE.Mesh(petalGeo, petalMat); petalGroup.add(petalMesh);
+const prand = mulberry(7);
+const PINFO = Array.from({ length: NP }, () => ({ ls: 0.94 + prand() * 0.12, dt: (prand() - 0.5) * 0.14, dphi: (prand() - 0.5) * 0.25 }));
+let PHASE = 0;
+const rr = new Float32Array(PNU + 1), yy = new Float32Array(PNU + 1), aa = new Float32Array(PNU + 1);
+function updatePetals(q, b) {
+  const P = petalGeo.attributes.position.array, A = petalGeo.attributes.ao.array;
+  let o = 0, oa = 0;
+  for (let p = 0; p < NP; p++) {
+    const k = p / (NP - 1), inf = PINFO[p];
+    const bi = sstep((b - 0.42 * (1 - k)) / 0.58);
+    // tomurcuk (kapalı yumurta)
+    const Lb = (0.30 + 0.20 * k) * (0.72 + 0.28 * q);
+    const thb = lerp(0.95, 0.62, q) + 0.08 * k, bdb = lerp(-2.0, -1.5, q), hb = 1.95 - 0.3 * k, r0b = 0.012 + 0.05 * k;
+    // açmış gül
+    const Lo = (0.6 + 0.36 * k) * inf.ls;
+    const tho = 0.04 + 1.02 * Math.pow(k, 1.6) + inf.dt * k;
+    const bdo = -0.6 * Math.pow(1 - k, 1.5) + 0.3 * k * k;
+    const tipo = 0.3 + 0.55 * k, ho = 1.3 - 0.68 * k, rollo = 0.10 + 0.2 * k, r0o = 0.02 + 0.07 * k;
+    const L = lerp(Lb, Lo, bi), th = lerp(thb, tho, bi), bd = lerp(bdb, bdo, bi), tip = tipo * bi;
+    const half = lerp(hb, ho, bi), roll = rollo * bi, r0 = lerp(r0b, r0o, bi);
+    const y0 = lerp(0.02, 0.035 - 0.05 * k, bi);
+    const phi = p * GOLD + inf.dphi + PHASE;
+    const aoK = lerp(1, lerp(0.62, 1, k), bi);
+    const angAt = uu => th + bd * uu + tip * Math.pow(sstep((uu - 0.45) / 0.55), 1.5);
+    for (let j = 0; j <= PNV; j++) {
+      const v = -1 + 2 * j / PNV, lf = 1 - 0.16 * v * v;
+      let r = r0, y = y0; const ds = L * lf / PNU;
+      for (let i = 0; i <= PNU; i++) {
+        rr[i] = r; yy[i] = y; aa[i] = angAt(i / PNU * lf);
+        const am = angAt((i + 0.5) / PNU * lf);
+        r += Math.sin(am) * ds; y += Math.cos(am) * ds;
+        if (r < 0.004) r = 0.004;
+      }
+      for (let i = 0; i <= PNU; i++) {
+        const u = i / PNU;
+        let wp = 0.3 + 0.7 * Math.sin(Math.min(1, u / 0.6) * Math.PI / 2);
+        if (u > 0.7) wp *= Math.sqrt(Math.max(0.05, 1 - 0.75 * Math.pow((u - 0.7) / 0.3, 2)));
+        const ang = phi + v * half * wp;
+        const ra = roll * L * v * v * sstep((u - 0.3) / 0.7);
+        const R = rr[i] + ra * Math.cos(aa[i]), Y = yy[i] - ra * Math.sin(aa[i]);
+        const idx = (p * (PNU + 1) * (PNV + 1) + i * (PNV + 1) + j);
+        P[idx * 3] = R * Math.cos(ang); P[idx * 3 + 1] = Y; P[idx * 3 + 2] = R * Math.sin(ang);
+        A[idx] = lerp(0.3, 1, sstep(u / 0.85)) * aoK;
+      }
+    }
+  }
+  petalGeo.attributes.position.needsUpdate = true; petalGeo.attributes.ao.needsUpdate = true;
+  petalGeo.computeVertexNormals();
+  petalGeo.computeBoundingSphere();
+}
+// ön yüz = dış yüz olsun (iç yüz uBack ile kararır)
+(function fixWinding() {
+  updatePetals(1, 1);
+  const p = NP - 1, i = 8, j = PNV / 2;
+  const idx = p * (PNU + 1) * (PNV + 1) + i * (PNV + 1) + j;
+  const P = petalGeo.attributes.position.array, Nn = petalGeo.attributes.normal.array;
+  const dot = P[idx * 3] * Nn[idx * 3] + P[idx * 3 + 2] * Nn[idx * 3 + 2] + 0.0 * Nn[idx * 3 + 1];
+  const outward = P[idx * 3] * Nn[idx * 3] + P[idx * 3 + 2] * Nn[idx * 3 + 2] - Nn[idx * 3 + 1] * 1.0;
+  if (outward < 0 && dot < 0.5) {
+    const ix = petalGeo.index.array;
+    for (let t = 0; t < ix.length; t += 3) { const tmp = ix[t + 1]; ix[t + 1] = ix[t + 2]; ix[t + 2] = tmp; }
+    petalGeo.index.needsUpdate = true;
+    updatePetals(1, 1);
+  }
+})();
+
+/* ---- tam açmış hal ölçüsü (taç kutusu) ---- */
+function measureCrown(sy) {
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  const c = Math.cos(CROWN_TILT), s = Math.sin(CROWN_TILT);
+  for (const arr of [petalGeo.attributes.position.array, sepGeo.attributes.position.array]) {
+    for (let i = 0; i < arr.length; i += 3) {
+      const x = arr[i], y = arr[i + 1] * sy * c - arr[i + 2] * s;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  return { x0, x1, y0, y1, w: x1 - x0, h: y1 - y0 };
+}
+// taç simetrik dursun: spiral başlangıç açısını dengele
+updateSepals(1, 1);
+{ let best = 1e9, bp = 0;
+  for (let a = 0; a < 48; a++) { PHASE = a / 48 * Math.PI * 2; updatePetals(1, 1); const m = measureCrown(1); const e = Math.abs(m.x0 + m.x1); if (e < best) { best = e; bp = PHASE; } }
+  PHASE = bp; }
+// taç genişliği = 1.7 × yükseklik olacak şekilde dikey ölçek
+updatePetals(1, 1);
+let CROWN_SY = 1;
+for (let it = 0; it < 6; it++) { const m = measureCrown(CROWN_SY); CROWN_SY = Math.min(1.4, Math.max(0.7, CROWN_SY * (m.w / m.h) / 1.7)); }
+const CROWN_BB = measureCrown(CROWN_SY);
+const RHO = CROWN_BB.w / CROWN_BB.h;
+crown.scale.y = CROWN_SY;
+
+/* ---- gövde ve yapraklar (yerleşime bağlı) ---- */
+function buildStem(Ls, r, capH) {
+  const pts = [];
+  for (let i = 0; i <= 8; i++) {
+    const a = -Math.PI / 2 + i / 8 * Math.PI / 2;
+    pts.push(new THREE.Vector2(Math.max(1e-4, r * Math.cos(a)), capH * (1 + Math.sin(a))));
+  }
+  pts.push(new THREE.Vector2(r, Ls));
+  return addAO(new THREE.LatheGeometry(pts, 28));
+}
+function buildLeaf(L, W, dir, up) {
+  const nu = 18, nv = 8;
+  const g = gridGeometry(nu, nv, 1);
+  const P = g.attributes.position.array, A = g.attributes.ao.array;
+  const ca = Math.cos(up), sa = Math.sin(up);
+  let o = 0, oa = 0;
+  for (let i = 0; i <= nu; i++) {
+    const u = i / nu;
+    const hw = Math.max(W * 0.05, W / 2 * Math.pow(Math.sin(Math.PI * Math.pow(u, 0.78)), 0.8));
+    const cx = dir * u * L * ca, cy = u * L * sa - 0.07 * L * u * u;
+    for (let j = 0; j <= nv; j++) {
+      const v = -1 + 2 * j / nv;
+      P[o++] = cx - dir * sa * v * hw * 0.3;
+      P[o++] = cy + v * hw;
+      P[o++] = -Math.abs(v) * hw * 0.55 + 0.05 * v * hw;
+      A[oa++] = lerp(0.7, 1, sstep(u / 0.3)) * lerp(0.92, 1, Math.abs(v));
+    }
+  }
+  g.computeVertexNormals();
+  const tip = new THREE.Vector3(dir * L * ca, L * sa - 0.07 * L, 0);
+  return { g, tip };
+}
+
+/* ---------------------------------------------------------------
+   Izgara, atlas, render hedefi, ekran geçişi
+---------------------------------------------------------------- */
+let dpr, devW, devH, cw, ch, cols, rows, offX, offY, NC;
+let cellData, cellTex, atlasTex, rt, rtW, rtH, pix;
+let cov, lum, ids, dep, roseG, roseC, births, prevCov;
+let L = {};          // yerleşim
+let leafTipL, leafTipR, thr8 = 3;
+let primeFlash = true;
+
+const screenMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uCells: { value: null }, uAtlas: { value: null },
+    uGrid: { value: new THREE.Vector2() }, uCell: { value: new THREE.Vector2() },
+    uOff: { value: new THREE.Vector2() }, uH: { value: 1 }, uGlow: { value: 0.16 }
+  },
+  vertexShader: `void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    precision highp float; precision highp int;
+    uniform sampler2D uCells; uniform sampler2D uAtlas;
+    uniform vec2 uGrid; uniform vec2 uCell; uniform vec2 uOff; uniform float uH; uniform float uGlow;
+    void main(){
+      vec2 p = vec2(gl_FragCoord.x - uOff.x, uH - gl_FragCoord.y - uOff.y);
+      ivec2 c = ivec2(floor(p / uCell));
+      ivec2 gr = ivec2(uGrid);
+      vec3 col = vec3(0.0);
+      if (c.x >= 0 && c.y >= 0 && c.x < gr.x && c.y < gr.y) {
+        vec4 d = texelFetch(uCells, c, 0);
+        int g = int(d.a * 255.0 + 0.5);
+        if (g > 0) {
+          ivec2 lp = ivec2(floor(p - vec2(c) * uCell));
+          float a = texelFetch(uAtlas, ivec2(g * int(uCell.x) + lp.x, lp.y), 0).r;
+          col = d.rgb * a;
+        }
+      }
+      vec3 gs = vec3(0.0);
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        ivec2 n = c + ivec2(i, j);
+        if (n.x < 0 || n.y < 0 || n.x >= gr.x || n.y >= gr.y) continue;
+        vec4 d = texelFetch(uCells, n, 0);
+        if (d.a == 0.0) continue;
+        vec2 dd = (p - (vec2(n) + 0.5) * uCell) / uCell.x;
+        gs += d.rgb * d.rgb * exp(-dot(dd, dd) * 0.55);
+      }
+      col += gs * uGlow;
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+  depthTest: false, depthWrite: false
+});
+const screenScene = new THREE.Scene();
+const screenQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), screenMat);
+screenQuad.frustumCulled = false; screenScene.add(screenQuad);
+const screenCam = new THREE.Camera();
+
+function buildAtlas() {
+  const n = 95, cv = document.createElement('canvas');
+  cv.width = n * cw; cv.height = ch;
+  const x = cv.getContext('2d');
+  x.fillStyle = '#000'; x.fillRect(0, 0, cv.width, cv.height);
+  const fam = 'Menlo, "SF Mono", ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
+  let fs = ch * 0.95;
+  x.font = `${fs}px ${fam}`;
+  const mw = x.measureText('M').width;
+  if (mw > cw * 1.02) fs *= cw * 1.02 / mw;
+  x.font = `${fs}px ${fam}`;
+  x.fillStyle = '#fff'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (let g = 1; g < n; g++) x.fillText(String.fromCharCode(32 + g), g * cw + cw / 2, ch * 0.54);
+  if (atlasTex) atlasTex.dispose();
+  atlasTex = new THREE.Texture(cv);
+  atlasTex.flipY = false; atlasTex.generateMipmaps = false;
+  atlasTex.minFilter = atlasTex.magFilter = THREE.NearestFilter;
+  atlasTex.needsUpdate = true;
+}
+
+/* ---- metin DOM ---- */
+const msgEl = document.getElementById('msg'), sigEl = document.getElementById('sig');
+const txtEl = document.getElementById('txt'), hintEl = document.getElementById('hint');
+hintEl.textContent = CONFIG.replayHint;
+function makeSpans(el, str) {
+  el.textContent = '';
+  return [...str].map(chr => {
+    const s = document.createElement('span');
+    s.textContent = chr === ' ' ? ' ' : chr;
+    el.appendChild(s);
+    return { el: s, ch: s.textContent, space: chr === ' ', st: 0 };
+  });
+}
+const msgSpans = makeSpans(msgEl, CONFIG.message);
+const sigSpans = makeSpans(sigEl, CONFIG.signature);
+
+/* ---- yerleşim ---- */
+function layout() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width || innerWidth, H = rect.height || innerHeight;
+  devW = Math.round(W * dpr); devH = Math.round(H * dpr);
+  renderer.setSize(devW, devH, false);
+
+  // masaüstü: en fazla ~160 sütun; kısa (yatay telefon) ekranda hücre ~4px kalsın
+  cw = H < 500 ? Math.round(4 * dpr) : Math.max(Math.round(4 * dpr), Math.ceil(devW / 160));
+  ch = Math.round(cw * 1.75);
+  cols = Math.floor(devW / cw); rows = Math.floor(devH / ch);
+  offX = Math.floor((devW - cols * cw) / 2); offY = Math.floor((devH - rows * ch) / 2);
+  NC = cols * rows;
+
+  cellData = new Uint8Array(NC * 4);
+  if (cellTex) cellTex.dispose();
+  cellTex = new THREE.DataTexture(cellData, cols, rows, THREE.RGBAFormat, THREE.UnsignedByteType);
+  cellTex.minFilter = cellTex.magFilter = THREE.NearestFilter; cellTex.generateMipmaps = false;
+  cellTex.needsUpdate = true;
+  buildAtlas();
+  screenMat.uniforms.uCells.value = cellTex; screenMat.uniforms.uAtlas.value = atlasTex;
+  screenMat.uniforms.uGrid.value.set(cols, rows); screenMat.uniforms.uCell.value.set(cw, ch);
+  screenMat.uniforms.uOff.value.set(offX, offY); screenMat.uniforms.uH.value = devH;
+
+  rtW = cols * 2; rtH = rows * 2;
+  if (rt) rt.dispose();
+  rt = new THREE.WebGLRenderTarget(rtW, rtH, { type: THREE.UnsignedByteType, format: THREE.RGBAFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, depthBuffer: true, generateMipmaps: false });
+  pix = new Uint8Array(rtW * rtH * 4);
+  cov = new Uint8Array(NC); lum = new Float32Array(NC); ids = new Uint8Array(NC); dep = new Uint8Array(NC);
+  roseG = new Uint8Array(NC); roseC = new Uint8Array(NC * 3); births = new Float32Array(NC).fill(-9); prevCov = new Uint8Array(NC);
+  primeFlash = true;
+
+  // güvenli alan
+  const sc = getComputedStyle(document.getElementById('safe'));
+  const sTop = parseFloat(sc.paddingTop) * dpr || 0, sBot = parseFloat(sc.paddingBottom) * dpr || 0;
+  const textH = txtEl.offsetHeight * dpr;
+  const availTop = sTop + devH * 0.03, availBot = devH - sBot - devH * 0.03 - 22 * dpr;
+  const avail = availBot - availTop;
+  const gapF = 0.16;
+  const hcW = 0.70 * devW / RHO;
+  const hcH = (avail - textH - 2 * ch) / (2.4 + gapF);
+  const hc = Math.max(40, Math.min(hcW, hcH));
+  const S = hc / CROWN_BB.h;
+  const gap = gapF * hc + 2 * ch;
+  const groupH = 2.4 * hc + gap + textH;
+  const top = availTop + Math.max(0, (avail - groupH) / 2);
+  const recFromTop = top + CROWN_BB.y1 * S;
+  const LsU = 1.4 * CROWN_BB.h - CROWN_BB.y0;           // gövde: tabandan taç dibine 1.4·h
+  const baseFromTop = recFromTop + LsU * S;
+  const gridTop = offY, gridH = rows * ch;
+  const wy = ft => (gridTop + gridH) - ft;
+  const cxCol = Math.round(cols / 2);
+  L = { S, hc, LsU, baseFromTop, recFromTop, cxCol, wx: cxCol * cw, wyBase: wy(baseFromTop), crownTopFromTop: top };
+
+  // kamera: dünya = cihaz pikseli (ızgara başı orijin, y yukarı)
+  const zr = CROWN_BB.w * S * 0.75 + 20;
+  camera.left = 0; camera.right = cols * cw; camera.top = rows * ch; camera.bottom = 0;
+  camera.near = 1; camera.far = 1 + 2 * zr; camera.position.set(0, 0, 1 + zr);
+  camera.updateProjectionMatrix();
+  thr8 = Math.max(3, Math.round(0.10 * hc / (2 * zr) * 255));
+
+  plant.position.set(L.wx, L.wyBase, 0);
+  plant.scale.setScalar(S);
+  crown.position.set(0, LsU, 0);
+
+  const stemW = Math.min(4, Math.max(3, Math.round(CROWN_BB.w * S / cw * 0.06)));
+  const rS = (stemW / 2 - 0.04) * cw / S;
+  stemMesh.geometry.dispose(); stemMesh.geometry = buildStem(LsU, rS, 0.2 * ch / S);
+  const wU = CROWN_BB.w;
+  const lfL = buildLeaf(0.29 * wU, 0.29 * wU * 0.42, -1, 0.10);
+  const lfR = buildLeaf(0.17 * wU, 0.17 * wU * 0.46, 1, 0.22);
+  leafL.geometry.dispose(); leafL.geometry = lfL.g; leafTipL = lfL.tip;
+  leafR.geometry.dispose(); leafR.geometry = lfR.g; leafTipR = lfR.tip;
+  leafL.position.set(-rS * 0.4, LsU / 3, -rS * 0.6);
+  leafR.position.set(rS * 0.4, LsU * 2 / 3, -rS * 0.6);
+
+  // metin
+  txtEl.style.top = ((baseFromTop + gap) / dpr) + 'px';
+  L.textTopDev = baseFromTop + gap; L.textH = textH;
+  L.crownBox = {
+    c0: Math.floor((L.wx + CROWN_BB.x0 * S) / cw) - 2, c1: Math.ceil((L.wx + CROWN_BB.x1 * S) / cw) + 2,
+    r0: Math.floor((top - offY) / ch) - 2, r1: Math.ceil((recFromTop - CROWN_BB.y0 * S - offY) / ch) + 2
+  };
+  L.baseRow = Math.floor((baseFromTop - offY - 0.5) / ch);
+  L.textRows = [Math.floor((L.textTopDev - offY) / ch), Math.ceil((L.textTopDev + textH - offY) / ch)];
+  cacheLetterRects();
+  initStars();
+}
+function cacheLetterRects() {
+  for (const s of [...msgSpans, ...sigSpans]) {
+    const r = s.el.getBoundingClientRect();
+    s.cx = Math.floor((r.right * dpr - offX) / cw) + 1;
+    s.cy = Math.floor(((r.top + r.height * 0.45) * dpr - offY) / ch);
+  }
+}
+
+/* ---------------------------------------------------------------
+   Yıldızlar, parıltılar
+---------------------------------------------------------------- */
+let stars = [], sparkles = [], nextSpark = 0, glitches = [];
+function initStars() {
+  stars = [];
+  const n = Math.round(NC * 0.011);
+  for (let i = 0; i < n; i++) stars.push({
+    i: Math.floor(Math.random() * NC), plus: Math.random() < 0.17,
+    base: 0.22 + Math.random() * 0.6, spd: 0.5 + Math.random() * 2.4, ph: Math.random() * 6.28,
+    t0: Math.pow(Math.random(), 0.75) * 4.5
+  });
+}
+const bri = new Float32Array(1 << 16);
+let briArr = null;
+function putBG(c, r, g, R, Gc, B) {
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c, b = R + Gc + B;
+  if (cellData[i * 4 + 3] && briArr[i] >= b) return;
+  briArr[i] = b;
+  cellData[i * 4] = R; cellData[i * 4 + 1] = Gc; cellData[i * 4 + 2] = B; cellData[i * 4 + 3] = g;
+}
+function putTop(c, r, g, R, Gc, B, onlyEmpty) {
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c;
+  if (onlyEmpty && roseG[i]) return;
+  if (onlyEmpty && cellData[i * 4 + 3] && briArr[i] >= R + Gc + B) return;
+  briArr[i] = R + Gc + B;
+  cellData[i * 4] = R; cellData[i * 4 + 1] = Gc; cellData[i * 4 + 2] = B; cellData[i * 4 + 3] = g;
+}
+function sparkleTarget(t) {
+  if (t < 1.0) return 0;
+  if (t < TL.bloom[0]) return 4;
+  if (t < TL.bloom[1] + 0.5) return 6;
+  return 4;
+}
+function spawnSparkle(t) {
+  const cb = L.crownBox;
+  for (let k = 0; k < 10; k++) {
+    const c = Math.floor(Math.random() * cols), r = Math.floor(Math.random() * rows);
+    if (c > cb.c0 - 3 && c < cb.c1 + 3 && r > cb.r0 - 2 && r < cb.r1 + 2) continue;
+    if (r >= L.textRows[0] - 3 && r <= L.textRows[1] + 3 && Math.abs(c - cols / 2) < cols * 0.42) continue;
+    if (Math.abs(c - L.cxCol) < 8 && r > cb.r1 && r < L.baseRow + 4) continue;
+    sparkles.push({ c, r, t0: t, life: 1.3 + Math.random() * 0.4, size: 0.75 + Math.random() * 0.45, warm: Math.random() });
+    return;
+  }
+}
+function drawSparkle(sp, t) {
+  const a = (t - sp.t0) / sp.life;
+  const e = Math.pow(Math.sin(Math.PI * a), 2);
+  const tint = sp.warm;
+  const col = b => [Math.min(255, b * 255), Math.min(255, b * lerp(245, 230, tint)), Math.min(255, b * lerp(255, 205, tint))];
+  const rays = [[0, -1, 4, GL_PIPE], [0, 1, 4, GL_PIPE], [-1, 0, 6, GL_DASH], [1, 0, 6, GL_DASH],
+    [-1, -1, 2, GL_BS], [1, 1, 2, GL_BS], [1, -1, 2, GL_SL], [-1, 1, 2, GL_SL]];
+  for (const [dx, dy, len0, g] of rays) {
+    const len = len0 * sp.size * Math.sqrt(e);
+    for (let d = 1; d <= Math.ceil(len); d++) {
+      const f = 1 - d / (len + 1);
+      if (f <= 0) break;
+      const [R, Gc, B] = col(e * Math.pow(f, 1.2) * 0.95);
+      putBG(sp.c + dx * d, sp.r + dy * d, g, R, Gc, B);
+    }
+  }
+  const [R, Gc, B] = col(Math.min(1, e * 1.15));
+  putBG(sp.c, sp.r, e > 0.45 ? GL_STAR : GL_PLUS, R, Gc, B);
+}
+function drawDust(c0, r0, inten, t, seed) {
+  const fk = Math.floor(t * 14);
+  const ry = cw / ch;
+  for (let k = 0; k < 34; k++) {
+    const h1 = hash3(seed, k, fk), h2 = hash3(seed + 7, k, fk), h3 = hash3(seed + 13, k, fk);
+    const ang = h1 * 6.2832, rad = Math.sqrt(h2) * 10;
+    const c = Math.round(c0 + Math.cos(ang) * rad), r = Math.round(r0 + Math.sin(ang) * rad * ry * 1.25);
+    const b = inten * (0.22 + 0.4 * h3) * (1 - rad / 11);
+    if (b <= 0.03) continue;
+    const v = Math.round(b * 255);
+    putTop(c, r, DUST_G[Math.floor(h3 * 2.999)], v, v, Math.min(255, v + 8), true);
+  }
+}
+function drawTip(c, r, inten, t, small) {
+  const pulse = 0.82 + 0.18 * Math.sin(t * 31);
+  const k = inten * pulse;
+  const P = (dc, dr, g, f) => putTop(c + dc, r + dr, g, Math.min(255, 255 * k * f), Math.min(255, 240 * k * f), Math.min(255, 190 * k * f), false);
+  P(0, 0, GL_STAR, 1);
+  P(-1, 0, GL_DASH, 0.75); P(1, 0, GL_DASH, 0.75);
+  P(0, -1, GL_PIPE, 0.7); P(0, 1, GL_PIPE, 0.55);
+  if (!small) {
+    P(-2, 0, GL_DASH, 0.35); P(2, 0, GL_DASH, 0.35); P(0, -2, GL_PIPE, 0.3);
+    P(-1, -1, GL_DOT, 0.4); P(1, -1, GL_DOT, 0.4); P(-1, 1, GL_DOT, 0.3); P(1, 1, GL_DOT, 0.3);
+  }
+}
+
+/* ---------------------------------------------------------------
+   Sahne → karakter hücreleri
+---------------------------------------------------------------- */
+function decodeRose(t) {
+  const W = rtW;
+  for (let r = 0; r < rows; r++) {
+    const py0 = (rows - 1 - r) * 2;
+    for (let c = 0; c < cols; c++) {
+      let n = 0, l = 0, gv = 0, pv = 0, dm = 255;
+      for (let sy = 0; sy < 2; sy++) {
+        let k = ((py0 + sy) * W + c * 2) * 4;
+        for (let sx = 0; sx < 2; sx++, k += 4) {
+          if (pix[k + 3]) {
+            n++; l += pix[k];
+            if (((pix[k + 1] + 32) >> 6) === 2) pv++; else gv++;
+            if (pix[k + 2] < dm) dm = pix[k + 2];
+          }
+        }
+      }
+      const i = r * cols + c;
+      cov[i] = n;
+      if (n) { lum[i] = l / (n * 255); ids[i] = pv >= gv ? 2 : 1; dep[i] = dm; } else ids[i] = 0;
+    }
+  }
+  const flashOn = !primeFlash && FREEZE === null && t < TL.bloom[1] + 0.3;
+  const flashK = t < TL.bloom[0] ? 0.9 : 0.45;
+  const gl = new Map();
+  for (const g of glitches) if (g.until > t) gl.set(g.i, g.g);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    const on = cov[i] >= 2 ? 1 : 0;
+    if (on && !prevCov[i] && flashOn) births[i] = t;
+    prevCov[i] = on;
+    if (!on) { roseG[i] = 0; continue; }
+    const id = ids[i], d0 = dep[i];
+    let gx = 0, gy = 0, edge = false, upE = false, dnE = false;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const cc = c + dx, r2 = r + dy;
+      let o = 0;
+      if (cc >= 0 && r2 >= 0 && cc < cols && r2 < rows) {
+        const nI = r2 * cols + cc;
+        if (cov[nI] >= 2) o = ids[nI] === id ? (dep[nI] <= d0 + thr8 ? 1 : 0) : (dep[nI] < d0 ? 1 : 0);
+      }
+      if (!o && (!dx || !dy)) { edge = true; if (dy === -1) upE = true; if (dy === 1) dnE = true; }
+      gx += dx * (dy ? 1 : 2) * o; gy += dy * (dx ? 1 : 2) * o;
+    }
+    let g, lv = clamp01(lum[i] * 1.12 + (hash3(c, r, 3) - 0.5) * 0.16);
+    const lut = id === 2 ? PETAL_LUT : GREEN_LUT;
+    if (edge) {
+      const ax = Math.abs(gx) / cw, ay = Math.abs(gy) / ch;
+      const ang = Math.atan2(ay, ax) * 57.3;
+      if (!gx && !gy) g = (upE && dnE) ? GL_DASH : GL_PIPE;
+      else if (ang < 24) g = GL_PIPE;
+      else if (ang > 64) g = gy > 0 ? GL_DASH : GL_US;
+      else g = (gx > 0) === (gy > 0) ? GL_SL : GL_BS;
+      lv = Math.max(lv, id === 2 ? 0.66 : 0.72);
+    } else {
+      const ri = Math.min(RAMP_G.length - 1, Math.floor(Math.pow(lv, 0.72) * RAMP_G.length));
+      g = RAMP_G[ri];
+    }
+    if (gl.has(i)) g = gl.get(i);
+    const li = Math.round(clamp01(lv) * 255) * 3;
+    let R = lut[li], Gc = lut[li + 1], B = lut[li + 2];
+    const age = t - births[i];
+    if (age >= 0 && age < 0.32) {
+      const f = (1 - age / 0.32) * flashK;
+      R = lerp(R, FLASH[0], f); Gc = lerp(Gc, FLASH[1], f); B = lerp(B, FLASH[2], f);
+    }
+    roseG[i] = g; roseC[i * 3] = R; roseC[i * 3 + 1] = Gc; roseC[i * 3 + 2] = B;
+  }
+  primeFlash = false;
+}
+
+function toCell(v) { return [Math.floor(v.x / cw), Math.floor((rows * ch - v.y) / ch)]; }
+const tmpV = new THREE.Vector3();
+
+/* ---------------------------------------------------------------
+   Kare güncelleme
+---------------------------------------------------------------- */
+let lastQ = -1, lastB = -1, lastSep = -1;
+function update(t, dt) {
+  const pStem = easeIO(prog(t, TL.stem));
+  const gL = easeOut(prog(t, TL.leafL)), gR = easeOut(prog(t, TL.leafR));
+  const gS = easeOut(prog(t, TL.sepal));
+  const gB = easeIO(prog(t, TL.bud));
+  const bl = easeIO(prog(t, TL.bloom));
+
+  stemMat.uniforms.uClip.value = pStem <= 0 ? -1 : pStem * L.LsU;
+  leafL.visible = gL > 0.001; leafL.scale.setScalar(Math.max(gL, 1e-3)); leafL.rotation.z = -1.0 * (1 - gL);
+  leafR.visible = gR > 0.001; leafR.scale.setScalar(Math.max(gR, 1e-3)); leafR.rotation.z = 1.0 * (1 - gR);
+  sepMesh.visible = recMesh.visible = gS > 0.001;
+  recMesh.scale.set(Math.max(gS, 1e-3), Math.max(gS, 1e-3) * 0.8, Math.max(gS, 1e-3));
+  const sepKey = gS * 1000 + bl;
+  if (gS > 0.001 && sepKey !== lastSep) { updateSepals(bl, gS); lastSep = sepKey; }
+  petalMesh.visible = gB > 0.001;
+  if (gB > 0.001 && (gB !== lastQ || bl !== lastB)) { updatePetals(gB, bl); lastQ = gB; lastB = bl; }
+  petalGroup.scale.setScalar(0.1 + 0.9 * easeOut(Math.min(1, gB * 1.15)));
+
+  const sw = sstep((t - TL.bloom[1]) / 2.5);
+  plant.rotation.y = 0.087 * sw * Math.sin((t - TL.bloom[1]) * 0.75);
+  crown.rotation.z = 0.025 * sw * Math.sin((t - TL.bloom[1]) * 0.55 + 1.3);
+  crown.rotation.x = CROWN_TILT;
+
+  // 3D → küçük hedef
+  renderer.setRenderTarget(rt);
+  renderer.setClearColor(0x000000, 0);
+  renderer.clear();
+  renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(rt, 0, 0, rtW, rtH, pix);
+  renderer.setRenderTarget(null);
+
+  // canlılık: rastgele karakter titremesi
+  if (t > TL.bloom[1] + 0.5) {
+    if (Math.random() < dt * 9) {
+      for (let k = 0; k < 30; k++) {
+        const i = Math.floor(Math.random() * NC);
+        if (roseG[i]) { glitches.push({ i, g: RAMP_G[Math.floor(Math.random() * RAMP_G.length)], until: t + 0.07 + Math.random() * 0.12 }); break; }
+      }
+    }
+    glitches = glitches.filter(g => g.until > t);
+  }
+  decodeRose(t);
+
+  // hücreleri birleştir
+  cellData.fill(0);
+  if (!briArr || briArr.length !== NC) briArr = new Float32Array(NC);
+  // yıldızlar
+  for (const s of stars) {
+    const f = clamp01((t - s.t0) / 1.5);
+    if (f <= 0) continue;
+    const v = s.base * f * (0.55 + 0.45 * Math.sin(t * s.spd + s.ph));
+    if (v < 0.07) continue;
+    const c = s.i % cols, r = (s.i / cols) | 0, b = Math.round(v * 225);
+    putBG(c, r, s.plus && v > 0.3 ? GL_PLUS : GL_DOT, b, b, Math.min(255, b + 12));
+  }
+  // büyük parıltılar
+  if (FREEZE === null || sparkles.length === 0) {
+    const target = sparkleTarget(t);
+    if (FREEZE !== null) { for (let k = 0; k < target; k++) { spawnSparkle(t - Math.random() * 1.2); } }
+    else if (sparkles.length < target && t >= nextSpark) { spawnSparkle(t); nextSpark = t + 0.12 + Math.random() * 0.45; }
+  }
+  if (FREEZE === null) sparkles = sparkles.filter(s => t - s.t0 < s.life);
+  for (const s of sparkles) drawSparkle(s, t);
+  // ayna yansıması
+  const M = Math.min(rows - L.baseRow - 1, 12);
+  for (let j = 1; j <= M; j++) {
+    const src = L.baseRow - j + 1, dst = L.baseRow + j;
+    if (src < 0) break;
+    const op = 0.1 * (1 - (j - 1) / M);
+    for (let c = Math.max(0, L.cxCol - 30); c < Math.min(cols, L.cxCol + 30); c++) {
+      const si = src * cols + c;
+      if (!roseG[si] || ids[si] !== 1) continue;
+      let g = roseG[si];
+      if (g === GL_SL) g = GL_BS; else if (g === GL_BS) g = GL_SL; else if (g === GL_US) g = GL_DASH;
+      const di = dst * cols + c;
+      cellData[di * 4] = roseC[si * 3] * op; cellData[di * 4 + 1] = roseC[si * 3 + 1] * op; cellData[di * 4 + 2] = roseC[si * 3 + 2] * op; cellData[di * 4 + 3] = g;
+      briArr[di] = 0;
+    }
+  }
+  // gül
+  for (let i = 0; i < NC; i++) {
+    const g = roseG[i];
+    if (!g) continue;
+    cellData[i * 4] = roseC[i * 3]; cellData[i * 4 + 1] = roseC[i * 3 + 1]; cellData[i * 4 + 2] = roseC[i * 3 + 2]; cellData[i * 4 + 3] = g;
+    briArr[i] = 999;
+  }
+  // büyüyen uçta parıltı + sihirli toz
+  plant.updateMatrixWorld(true);
+  const tips = [];
+  if (t > TL.stem[0] && t < TL.stem[1] + 0.25) {
+    tmpV.set(0, pStem * L.LsU, 0); plant.localToWorld(tmpV);
+    tips.push([...toCell(tmpV), 1 - sstep((t - TL.stem[1]) / 0.25), 1]);
+  }
+  if (gL > 0.001 && t < TL.leafL[1] + 0.25) { tmpV.copy(leafTipL); leafL.localToWorld(tmpV); tips.push([...toCell(tmpV), 1 - sstep((t - TL.leafL[1]) / 0.25), 2]); }
+  if (gR > 0.001 && t < TL.leafR[1] + 0.25) { tmpV.copy(leafTipR); leafR.localToWorld(tmpV); tips.push([...toCell(tmpV), 1 - sstep((t - TL.leafR[1]) / 0.25), 3]); }
+  if (t > TL.sepal[0] && t < TL.bud[0] + 0.6) {
+    tmpV.set(0, 0.03, 0); crown.localToWorld(tmpV);
+    tips.push([...toCell(tmpV), Math.sin(Math.PI * clamp01((t - TL.sepal[0]) / (TL.bud[0] + 0.6 - TL.sepal[0]))), 4]);
+  }
+  if (t > TL.bud[0] + 0.3 && t < TL.bud[1]) {
+    tmpV.set(0, 0.03 + 0.45 * petalGroup.scale.y, 0); crown.localToWorld(tmpV);
+    tips.push([...toCell(tmpV), 0.6 * Math.sin(Math.PI * clamp01((t - TL.bud[0] - 0.3) / (TL.bud[1] - TL.bud[0] - 0.3))), 5]);
+  }
+  for (const [c, r, k, seed] of tips) if (k > 0.01) drawDust(c, r, k, t, seed);
+  for (const [c, r, k, seed] of tips) if (k > 0.01 && seed < 5) drawTip(c, r, k, t, seed === 4);
+
+  // yazı
+  const writing = updateText(t);
+  if (writing) drawTip(writing.cx, writing.cy, writing.k, t, true);
+  hintEl.classList.toggle('show', t > HINT_T);
+
+  cellTex.needsUpdate = true;
+  renderer.setClearColor(0x000000, 1);
+  renderer.render(screenScene, screenCam);
+}
+
+function updateText(t) {
+  let writing = null;
+  const step = (arr, start, gap, dur) => {
+    arr.forEach((s, i) => {
+      const s0 = start + i * gap;
+      let st = t < s0 ? 0 : t < s0 + dur ? 1 : 2;
+      if (s.space && st === 1) st = 2;
+      if (st === 1) {
+        s.el.textContent = SCRAMBLE[Math.floor(Math.random() * SCRAMBLE.length)];
+        writing = { cx: s.cx, cy: s.cy, k: 0.9 };
+      }
+      if (st !== s.st) {
+        s.st = st;
+        s.el.className = st === 0 ? '' : st === 1 ? 'on scr' : 'on';
+        if (st !== 1) s.el.textContent = s.ch;
+      }
+    });
+  };
+  step(msgSpans, TL.text, LETTER_GAP, LETTER_SCR);
+  step(sigSpans, SIG_START, 0.08, 0.35);
+  return writing;
+}
+
+/* ---------------------------------------------------------------
+   Döngü, etkileşim
+---------------------------------------------------------------- */
+let T = 0, last = performance.now(), raf = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  T = FREEZE !== null ? FREEZE : T + dt;
+  update(T, dt);
+  raf = requestAnimationFrame(frame);
+}
+function start() { cancelAnimationFrame(raf); last = performance.now(); raf = requestAnimationFrame(frame); }
+function restart() {
+  if (FREEZE !== null) return;
+  T = 0; sparkles = []; glitches = []; nextSpark = 0; lastQ = lastB = lastSep = -1;
+  births.fill(-9); prevCov.fill(0);
+  for (const s of [...msgSpans, ...sigSpans]) { s.st = -1; }
+  hintEl.classList.remove('show');
+  initStars();
+}
+addEventListener('pointerdown', restart);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) cancelAnimationFrame(raf); else start();
+});
+let rzT = 0;
+const onResize = () => { clearTimeout(rzT); rzT = setTimeout(() => { layout(); }, 120); };
+addEventListener('resize', onResize);
+addEventListener('orientationchange', onResize);
+
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
+  layout();
+  window.__rose = { RHO, CROWN_BB, CROWN_SY, get L() { return L; }, get grid() { return { cols, rows, cw, ch }; } };
+  start();
+});
+</script>
+</body>
+</html>
