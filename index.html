@@ -188,7 +188,6 @@ const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10);
 const plant = new THREE.Group(); scene.add(plant);
 const crown = new THREE.Group(); plant.add(crown);
-const petalGroup = new THREE.Group(); crown.add(petalGroup);
 const CROWN_TILT = 0.3;
 crown.rotation.x = CROWN_TILT;
 
@@ -238,101 +237,64 @@ function updateSepals(curl, appear) {
   sepGeo.computeBoundingSphere();
 }
 
-/* ---- taç yaprakları (altın açı spirali) ---- */
-const NP = 22, PNU = 12, PNV = 10, GOLD = Math.PI * (3 - Math.sqrt(5));
-const petalGeo = gridGeometry(PNU, PNV, NP);
-const petalMat = makeMat(2, 0.72);
-const petalMesh = new THREE.Mesh(petalGeo, petalMat); petalGroup.add(petalMesh);
-const prand = mulberry(7);
-const PINFO = Array.from({ length: NP }, () => ({ ls: 0.94 + prand() * 0.12, dt: (prand() - 0.5) * 0.14, dphi: (prand() - 0.5) * 0.25 }));
-let PHASE = 0;
-const rr = new Float32Array(PNU + 1), yy = new Float32Array(PNU + 1), aa = new Float32Array(PNU + 1);
-function updatePetals(q, b) {
-  const P = petalGeo.attributes.position.array, A = petalGeo.attributes.ao.array;
-  let o = 0, oa = 0;
-  for (let p = 0; p < NP; p++) {
-    const k = p / (NP - 1), inf = PINFO[p];
-    const bi = sstep((b - 0.42 * (1 - k)) / 0.58);
-    // tomurcuk (kapalı yumurta)
-    const Lb = (0.30 + 0.20 * k) * (0.72 + 0.28 * q);
-    const thb = lerp(0.95, 0.62, q) + 0.08 * k, bdb = lerp(-2.0, -1.5, q), hb = 1.95 - 0.3 * k, r0b = 0.012 + 0.05 * k;
-    // açmış gül
-    const Lo = (0.6 + 0.36 * k) * inf.ls;
-    const tho = 0.04 + 1.02 * Math.pow(k, 1.6) + inf.dt * k;
-    const bdo = -0.6 * Math.pow(1 - k, 1.5) + 0.3 * k * k;
-    const tipo = 0.3 + 0.55 * k, ho = 1.3 - 0.68 * k, rollo = 0.10 + 0.2 * k, r0o = 0.02 + 0.07 * k;
-    const L = lerp(Lb, Lo, bi), th = lerp(thb, tho, bi), bd = lerp(bdb, bdo, bi), tip = tipo * bi;
-    const half = lerp(hb, ho, bi), roll = rollo * bi, r0 = lerp(r0b, r0o, bi);
-    const y0 = lerp(0.02, 0.035 - 0.05 * k, bi);
-    const phi = p * GOLD + inf.dphi + PHASE;
-    const aoK = lerp(1, lerp(0.62, 1, k), bi);
-    const angAt = uu => th + bd * uu + tip * Math.pow(sstep((uu - 0.45) / 0.55), 1.5);
-    for (let j = 0; j <= PNV; j++) {
-      const v = -1 + 2 * j / PNV, lf = 1 - 0.16 * v * v;
-      let r = r0, y = y0; const ds = L * lf / PNU;
-      for (let i = 0; i <= PNU; i++) {
-        rr[i] = r; yy[i] = y; aa[i] = angAt(i / PNU * lf);
-        const am = angAt((i + 0.5) / PNU * lf);
-        r += Math.sin(am) * ds; y += Math.cos(am) * ds;
-        if (r < 0.004) r = 0.004;
-      }
-      for (let i = 0; i <= PNU; i++) {
-        const u = i / PNU;
-        let wp = 0.3 + 0.7 * Math.sin(Math.min(1, u / 0.6) * Math.PI / 2);
-        if (u > 0.7) wp *= Math.sqrt(Math.max(0.05, 1 - 0.75 * Math.pow((u - 0.7) / 0.3, 2)));
-        const ang = phi + v * half * wp;
-        const ra = roll * L * v * v * sstep((u - 0.3) / 0.7);
-        const R = rr[i] + ra * Math.cos(aa[i]), Y = yy[i] - ra * Math.sin(aa[i]);
-        const idx = (p * (PNU + 1) * (PNV + 1) + i * (PNV + 1) + j);
-        P[idx * 3] = R * Math.cos(ang); P[idx * 3 + 1] = Y; P[idx * 3 + 2] = R * Math.sin(ang);
-        A[idx] = lerp(0.3, 1, sstep(u / 0.85)) * aoK;
-      }
-    }
+/* ---- taç: önden görünen katmanlı elipsoid taç yaprakları (hücrelere doğrudan çizilir) ----
+   birim: taç yüksekliği = 1, orijin = çanak merkezi. [cx, cy, rx, ry, dönüş]
+   B = tomurcuk (tam şişmiş), O = tam açmış. Sıra: arkadan öne. */
+const PETALS = [
+  // B                          O                           ton  gecikme dalga  sarmal
+  [[0, .32, .12, .18, 0],      [0, .76, .50, .22, 0],      .50, .15, .08, 0],   // arka kenar
+  [[-.03, .30, .13, .20, .1],  [-.40, .70, .30, .20, .25], .60, .15, .07, 0],   // arka sol
+  [[.03, .30, .13, .20, -.1],  [.40, .70, .30, .20, -.25], .60, .15, .07, 0],   // arka sağ
+  [[-.02, .40, .09, .13, 0],   [-.04, .80, .16, .16, 0],   .80, .20, 0, 1],     // göbek 1
+  [[.03, .36, .08, .12, 0],    [.07, .75, .14, .14, 0],    .85, .20, 0, 1],     // göbek 2
+  [[-.06, .28, .12, .22, .15], [-.20, .58, .20, .30, .35], .90, .10, .05, 0],   // iç sol
+  [[.07, .26, .11, .21, -.2],  [.22, .56, .20, .30, -.35], .90, .10, .05, 0],   // iç sağ
+  [[-.08, .20, .11, .18, .25], [-.45, .48, .24, .44, .62], .85, 0, .05, 0],     // dış sol
+  [[.09, .19, .10, .17, -.25], [.45, .48, .24, .44, -.62], .85, 0, .05, 0],     // dış sağ
+  [[-.08, .30, 0, 0, 0],       [-.76, .77, .14, .08, .6],  1.1, .30, 0, 0],     // sol kıvrık uç
+  [[.08, .30, 0, 0, 0],        [.76, .77, .14, .08, -.6],  1.1, .30, 0, 0],     // sağ kıvrık uç
+  [[-.05, .20, 0, 0, 0],       [-.24, .38, .17, .27, .45],  .95, .05, .04, 0],   // ön sol
+  [[.05, .20, 0, 0, 0],        [.24, .38, .17, .27, -.45],  .95, .05, .04, 0],   // ön sağ
+  [[0, .14, .13, .14, 0],      [0, .30, .27, .32, 0],      1.0, 0, .04, 0],     // ön
+  ];
+const PN = PETALS.length, PCUR = new Float32Array(PN * 5);
+const LX = -0.45, LY = 0.55, LZ = 0.70, LN = Math.hypot(LX, LY, LZ);
+function setPetals(swell, bloomRaw) {          // swell: tomurcuk şişmesi, bloomRaw: doğrusal açılma
+  const sx = swell, sy = swell * lerp(0.75, 1, swell);
+  for (let k = 0; k < PN; k++) {
+    const [B, O, , d] = PETALS[k];
+    const q = easeIO((bloomRaw - d) / 0.7);
+    const o = k * 5;
+    PCUR[o] = lerp(B[0] * sx, O[0], q); PCUR[o + 1] = lerp(B[1] * sy, O[1], q);
+    PCUR[o + 2] = lerp(B[2] * sx, O[2], q); PCUR[o + 3] = lerp(B[3] * sy, O[3], q);
+    PCUR[o + 4] = lerp(B[4], O[4], q);
   }
-  petalGeo.attributes.position.needsUpdate = true; petalGeo.attributes.ao.needsUpdate = true;
-  petalGeo.computeVertexNormals();
-  petalGeo.computeBoundingSphere();
 }
-// ön yüz = dış yüz olsun (iç yüz uBack ile kararır)
-(function fixWinding() {
-  updatePetals(1, 1);
-  const p = NP - 1, i = 8, j = PNV / 2;
-  const idx = p * (PNU + 1) * (PNV + 1) + i * (PNV + 1) + j;
-  const P = petalGeo.attributes.position.array, Nn = petalGeo.attributes.normal.array;
-  const dot = P[idx * 3] * Nn[idx * 3] + P[idx * 3 + 2] * Nn[idx * 3 + 2] + 0.0 * Nn[idx * 3 + 1];
-  const outward = P[idx * 3] * Nn[idx * 3] + P[idx * 3 + 2] * Nn[idx * 3 + 2] - Nn[idx * 3 + 1] * 1.0;
-  if (outward < 0 && dot < 0.5) {
-    const ix = petalGeo.index.array;
-    for (let t = 0; t < ix.length; t += 3) { const tmp = ix[t + 1]; ix[t + 1] = ix[t + 2]; ix[t + 2] = tmp; }
-    petalGeo.index.needsUpdate = true;
-    updatePetals(1, 1);
+// (x, y) taç biriminde → en öndeki taç yaprağı; ışık değeri PL'ye yazılır
+let PL = 0;
+function hitPetal(x, y) {
+  for (let k = PN - 1; k >= 0; k--) {
+    const o = k * 5, rx = PCUR[o + 2], ry = PCUR[o + 3];
+    if (rx < 1e-3) continue;
+    const dx = x - PCUR[o], dy = y - PCUR[o + 1], cr = Math.cos(PCUR[o + 4]), sr = Math.sin(PCUR[o + 4]);
+    const lx = (dx * cr + dy * sr) / rx, ly = (-dx * sr + dy * cr) / ry;
+    let r2 = lx * lx + ly * ly;
+    if (r2 > 1.3) continue;
+    const P = PETALS[k];
+    if (P[4] && ly > 0) r2 /= Math.pow(1 + P[4] * Math.sin(Math.atan2(ly, lx) * 5 + k), 2);   // dalgalı kenar
+    if (r2 >= 1) continue;
+    const z = Math.sqrt(1 - r2);
+    const nx = lx * 0.7, ny = ly * 0.7, nn = Math.hypot(nx, ny, z);
+    const dif = Math.max(0, (nx * LX + ny * LY + z * LZ) / (nn * LN));
+    let b = 0.85 * P[2] * (0.1 + 0.9 * dif) * (0.35 + 0.65 * z);
+    if (P[5]) { const f = (Math.atan2(ly, lx) / 6.2832 + Math.sqrt(r2) * 1.6) % 1; if ((f + 1) % 1 < 0.14) b *= 0.35; }
+    PL = b > 1 ? 1 : b;
+    return k;
   }
-})();
-
-/* ---- tam açmış hal ölçüsü (taç kutusu) ---- */
-function measureCrown(sy) {
-  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
-  const c = Math.cos(CROWN_TILT), s = Math.sin(CROWN_TILT);
-  for (const arr of [petalGeo.attributes.position.array, sepGeo.attributes.position.array]) {
-    for (let i = 0; i < arr.length; i += 3) {
-      const x = arr[i], y = arr[i + 1] * sy * c - arr[i + 2] * s;
-      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-    }
-  }
-  return { x0, x1, y0, y1, w: x1 - x0, h: y1 - y0 };
+  return -1;
 }
-// taç simetrik dursun: spiral başlangıç açısını dengele
-updateSepals(1, 1);
-{ let best = 1e9, bp = 0;
-  for (let a = 0; a < 48; a++) { PHASE = a / 48 * Math.PI * 2; updatePetals(1, 1); const m = measureCrown(1); const e = Math.abs(m.x0 + m.x1); if (e < best) { best = e; bp = PHASE; } }
-  PHASE = bp; }
-// taç genişliği = 1.7 × yükseklik olacak şekilde dikey ölçek
-updatePetals(1, 1);
-let CROWN_SY = 1;
-for (let it = 0; it < 6; it++) { const m = measureCrown(CROWN_SY); CROWN_SY = Math.min(1.4, Math.max(0.7, CROWN_SY * (m.w / m.h) / 1.7)); }
-const CROWN_BB = measureCrown(CROWN_SY);
+const CROWN_BB = { x0: -0.85, x1: 0.85, y0: -0.1, y1: 1.0, w: 1.7, h: 1.1 };
 const RHO = CROWN_BB.w / CROWN_BB.h;
-crown.scale.y = CROWN_SY;
 
 /* ---- gövde ve yapraklar (yerleşime bağlı) ---- */
 function buildStem(Ls, r, capH) {
@@ -505,7 +467,7 @@ function layout() {
   const groupH = 2.4 * hc + gap + textH;
   const top = availTop + Math.max(0, (avail - groupH) / 2);
   const recFromTop = top + CROWN_BB.y1 * S;
-  const LsU = 1.4 * CROWN_BB.h - CROWN_BB.y0;           // gövde: tabandan taç dibine 1.4·h
+  const LsU = 1.45;                                     // gövde ≈ 1.4 × taç yüksekliği
   const baseFromTop = recFromTop + LsU * S;
   const gridTop = offY, gridH = rows * ch;
   const wy = ft => (gridTop + gridH) - ft;
@@ -517,7 +479,7 @@ function layout() {
   camera.left = 0; camera.right = cols * cw; camera.top = rows * ch; camera.bottom = 0;
   camera.near = 1; camera.far = 1 + 2 * zr; camera.position.set(0, 0, 1 + zr);
   camera.updateProjectionMatrix();
-  thr8 = Math.max(3, Math.round(0.10 * hc / (2 * zr) * 255));
+  thr8 = Math.max(3, Math.round(0.22 * hc / (2 * zr) * 255));
 
   plant.position.set(L.wx, L.wyBase, 0);
   plant.scale.setScalar(S);
@@ -670,6 +632,7 @@ function decodeRose(t) {
       if (n) { lum[i] = l / (n * 255); ids[i] = pv >= gv ? 2 : 1; dep[i] = dm; } else ids[i] = 0;
     }
   }
+  paintCrown();
   const flashOn = !primeFlash && FREEZE === null && t < TL.bloom[1] + 0.3;
   const flashK = t < TL.bloom[0] ? 0.9 : 0.45;
   const gl = new Map();
@@ -681,20 +644,21 @@ function decodeRose(t) {
     prevCov[i] = on;
     if (!on) { roseG[i] = 0; continue; }
     const id = ids[i], d0 = dep[i];
-    let gx = 0, gy = 0, edge = false, upE = false, dnE = false;
+    let gx = 0, gy = 0, edge = false, upE = false, dnE = false, sil = false;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       if (!dx && !dy) continue;
       const cc = c + dx, r2 = r + dy;
-      let o = 0;
+      let o = 0, emp = true;
       if (cc >= 0 && r2 >= 0 && cc < cols && r2 < rows) {
         const nI = r2 * cols + cc;
-        if (cov[nI] >= 2) o = ids[nI] === id ? (dep[nI] <= d0 + thr8 ? 1 : 0) : (dep[nI] < d0 ? 1 : 0);
+        emp = cov[nI] < 2;
+        if (!emp) o = ids[nI] === id ? (dep[nI] <= d0 + thr8 ? 1 : 0) : (dep[nI] < d0 ? 1 : 0);
       }
-      if (!o && (!dx || !dy)) { edge = true; if (dy === -1) upE = true; if (dy === 1) dnE = true; }
+      if (!o && (!dx || !dy)) { edge = true; if (emp) sil = true; if (dy === -1) upE = true; if (dy === 1) dnE = true; }
       gx += dx * (dy ? 1 : 2) * o; gy += dy * (dx ? 1 : 2) * o;
     }
     let g, lv = clamp01(lum[i] * 1.12 + (hash3(c, r, 3) - 0.5) * 0.16);
-    const lut = id === 2 ? PETAL_LUT : GREEN_LUT;
+    const lut = id >= 2 ? PETAL_LUT : GREEN_LUT;
     if (edge) {
       const ax = Math.abs(gx) / cw, ay = Math.abs(gy) / ch;
       const ang = Math.atan2(ay, ax) * 57.3;
@@ -702,8 +666,11 @@ function decodeRose(t) {
       else if (ang < 24) g = GL_PIPE;
       else if (ang > 64) g = gy > 0 ? GL_DASH : GL_US;
       else g = (gx > 0) === (gy > 0) ? GL_SL : GL_BS;
-      lv = Math.max(lv, id === 2 ? 0.66 : 0.72);
-    } else {
+      // taç içinde yalnız yaprak ağızları (üst kenarlar) çizgi olsun; yan/alt sınırlar dolguya kalsın
+      if (!sil && id >= 3 && (g === GL_PIPE || g === GL_US)) edge = false;
+      else lv = Math.max(lv, id >= 2 ? 0.66 : 0.72);
+    }
+    if (!edge) {
       const ri = Math.min(RAMP_G.length - 1, Math.floor(Math.pow(lv, 0.72) * RAMP_G.length));
       g = RAMP_G[ri];
     }
@@ -720,13 +687,28 @@ function decodeRose(t) {
   primeFlash = false;
 }
 
+function paintCrown() {
+  crown.updateMatrixWorld(true);
+  tmpV.set(0, 0, 0); crown.localToWorld(tmpV);
+  const ox = tmpV.x, oy = tmpV.y, S = L.S, a = -crown.rotation.z, ca = Math.cos(a), sa = Math.sin(a);
+  const sq = Math.cos(plant.rotation.y), Hh = rows * ch;
+  const c0 = Math.max(0, Math.floor((ox - 0.95 * S) / cw)), c1 = Math.min(cols - 1, Math.ceil((ox + 0.95 * S) / cw));
+  const r0 = Math.max(0, Math.floor((Hh - oy - 1.1 * S) / ch)), r1 = Math.min(rows - 1, Math.ceil((Hh - oy + 0.1 * S) / ch));
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    const dx = (c + 0.5) * cw - ox, dy = Hh - (r + 0.5) * ch - oy;
+    const k = hitPetal((dx * ca - dy * sa) / (S * sq), (dx * sa + dy * ca) / S);
+    if (k < 0) continue;
+    const i = r * cols + c;
+    cov[i] = 4; lum[i] = PL; ids[i] = 3 + k; dep[i] = 40 - k;   // ayrı kimlik: her yaprak sınırı kenar olur
+  }
+}
 function toCell(v) { return [Math.floor(v.x / cw), Math.floor((rows * ch - v.y) / ch)]; }
 const tmpV = new THREE.Vector3();
 
 /* ---------------------------------------------------------------
    Kare güncelleme
 ---------------------------------------------------------------- */
-let lastQ = -1, lastB = -1, lastSep = -1;
+let lastSep = -1;
 function update(t, dt) {
   const pStem = easeIO(prog(t, TL.stem));
   const gL = easeOut(prog(t, TL.leafL)), gR = easeOut(prog(t, TL.leafR));
@@ -741,9 +723,7 @@ function update(t, dt) {
   recMesh.scale.set(Math.max(gS, 1e-3), Math.max(gS, 1e-3) * 0.8, Math.max(gS, 1e-3));
   const sepKey = gS * 1000 + bl;
   if (gS > 0.001 && sepKey !== lastSep) { updateSepals(bl, gS); lastSep = sepKey; }
-  petalMesh.visible = gB > 0.001;
-  if (gB > 0.001 && (gB !== lastQ || bl !== lastB)) { updatePetals(gB, bl); lastQ = gB; lastB = bl; }
-  petalGroup.scale.setScalar(0.1 + 0.9 * easeOut(Math.min(1, gB * 1.15)));
+  setPetals(gB, prog(t, TL.bloom));
 
   const sw = sstep((t - TL.bloom[1]) / 2.5);
   plant.rotation.y = 0.087 * sw * Math.sin((t - TL.bloom[1]) * 0.75);
@@ -827,7 +807,7 @@ function update(t, dt) {
     tips.push([...toCell(tmpV), Math.sin(Math.PI * clamp01((t - TL.sepal[0]) / (TL.bud[0] + 0.6 - TL.sepal[0]))), 4]);
   }
   if (t > TL.bud[0] + 0.3 && t < TL.bud[1]) {
-    tmpV.set(0, 0.03 + 0.45 * petalGroup.scale.y, 0); crown.localToWorld(tmpV);
+    tmpV.set(0, 0.03 + 0.5 * gB, 0); crown.localToWorld(tmpV);
     tips.push([...toCell(tmpV), 0.6 * Math.sin(Math.PI * clamp01((t - TL.bud[0] - 0.3) / (TL.bud[1] - TL.bud[0] - 0.3))), 5]);
   }
   for (const [c, r, k, seed] of tips) if (k > 0.01) drawDust(c, r, k, t, seed);
@@ -879,7 +859,7 @@ function frame(now) {
 function start() { cancelAnimationFrame(raf); last = performance.now(); raf = requestAnimationFrame(frame); }
 function restart() {
   if (FREEZE !== null) return;
-  T = 0; sparkles = []; glitches = []; nextSpark = 0; lastQ = lastB = lastSep = -1;
+  T = 0; sparkles = []; glitches = []; nextSpark = 0; lastSep = -1;
   births.fill(-9); prevCov.fill(0);
   for (const s of [...msgSpans, ...sigSpans]) { s.st = -1; }
   hintEl.classList.remove('show');
@@ -896,7 +876,7 @@ addEventListener('orientationchange', onResize);
 
 (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
   layout();
-  window.__rose = { RHO, CROWN_BB, CROWN_SY, get L() { return L; }, get grid() { return { cols, rows, cw, ch }; } };
+  window.__rose = { RHO, CROWN_BB, get L() { return L; }, get grid() { return { cols, rows, cw, ch }; } };
   start();
 });
 </script>
